@@ -226,6 +226,24 @@ func (s *Server) Process(ctx context.Context, network net.Network, conn stat.Con
 	inbound.Name = "trojan"
 	inbound.CanSpliceCopy = 3
 	inbound.User = user
+
+	if content := session.ContentFromContext(ctx); content != nil {
+		if tlsConn, ok := iConn.(*tls.Conn); ok {
+			cs := tlsConn.ConnectionState()
+			content.SetAttribute("sni", cs.ServerName)
+			content.SetAttribute("alpn", cs.NegotiatedProtocol)
+		} else if realityConn, ok := iConn.(*reality.Conn); ok {
+			cs := realityConn.ConnectionState()
+			content.SetAttribute("sni", cs.ServerName)
+			content.SetAttribute("alpn", cs.NegotiatedProtocol)
+		}
+		if wsConn, ok := iConn.(interface{ Headers() map[string]string }); ok {
+			headers := wsConn.Headers()
+			for key, val := range headers {
+				content.SetAttribute("ws_header:"+key, val)
+			}
+		}
+	}
 	sessionPolicy = s.policyManager.ForLevel(user.Level)
 
 	if destination.Network == net.Network_UDP { // handle udp request

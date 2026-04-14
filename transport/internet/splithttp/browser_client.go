@@ -39,7 +39,7 @@ func (c *BrowserDialerClient) OpenStream(ctx context.Context, url string, sessio
 		return nil, dummyAddr, dummyAddr, err
 	}
 
-	return websocket.NewConnection(conn, dummyAddr, nil, 0), conn.RemoteAddr(), conn.LocalAddr(), nil
+	return websocket.NewConnection(conn, dummyAddr, nil, 0, nil), conn.RemoteAddr(), conn.LocalAddr(), nil
 }
 
 func (c *BrowserDialerClient) PostPacket(ctx context.Context, url string, sessionId string, seqStr string, payload buf.MultiBuffer) error {

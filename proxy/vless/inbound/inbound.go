@@ -537,6 +537,24 @@ func (h *Handler) Process(ctx context.Context, network net.Network, connection s
 	inbound.User = request.User
 	inbound.VlessRoute = net.PortFromBytes(userSentID[6:8])
 
+	if content := session.ContentFromContext(ctx); content != nil {
+		if tlsConn, ok := iConn.(*tls.Conn); ok {
+			cs := tlsConn.ConnectionState()
+			content.SetAttribute("sni", cs.ServerName)
+			content.SetAttribute("alpn", cs.NegotiatedProtocol)
+		} else if realityConn, ok := iConn.(*reality.Conn); ok {
+			cs := realityConn.ConnectionState()
+			content.SetAttribute("sni", cs.ServerName)
+			content.SetAttribute("alpn", cs.NegotiatedProtocol)
+		}
+		if wsConn, ok := iConn.(interface{ Headers() map[string]string }); ok {
+			headers := wsConn.Headers()
+			for key, val := range headers {
+				content.SetAttribute("ws_header:"+key, val)
+			}
+		}
+	}
+
 	account := request.User.Account.(*vless.MemoryAccount)
 
 	if account.Reverse != nil && request.Command != protocol.RequestCommandRvs {

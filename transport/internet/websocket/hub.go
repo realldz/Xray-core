@@ -29,6 +29,25 @@ type requestHandler struct {
 
 var replacer = strings.NewReplacer("+", "-", "/", "_", "=", "")
 
+func collectHeaders(h http.Header) map[string]string {
+	result := make(map[string]string)
+	for key, values := range h {
+		if len(values) > 0 {
+			result[key] = values[0]
+		}
+	}
+	return result
+}
+
+// collectHeadersWithHost collects headers plus the Host special field
+func collectHeadersWithHost(r *http.Request) map[string]string {
+	result := collectHeaders(r.Header)
+	if r.Host != "" {
+		result["Host"] = r.Host
+	}
+	return result
+}
+
 var upgrader = &websocket.Upgrader{
 	ReadBufferSize:   0,
 	WriteBufferSize:  0,
@@ -84,7 +103,7 @@ func (h *requestHandler) ServeHTTP(writer http.ResponseWriter, request *http.Req
 		}
 	}
 
-	h.ln.addConn(NewConnection(conn, remoteAddr, extraReader, h.ln.config.HeartbeatPeriod))
+	h.ln.addConn(NewConnection(conn, remoteAddr, extraReader, h.ln.config.HeartbeatPeriod, collectHeadersWithHost(request)))
 }
 
 type Listener struct {

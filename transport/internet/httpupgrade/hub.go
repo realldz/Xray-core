@@ -23,6 +23,25 @@ type server struct {
 	socketSettings *internet.SocketConfig
 }
 
+func collectHTTPHeaders(h http.Header) map[string]string {
+	result := make(map[string]string)
+	for key, values := range h {
+		if len(values) > 0 {
+			result[key] = values[0]
+		}
+	}
+	return result
+}
+
+// collectHTTPHeadersWithHost collects headers plus the Host special field
+func collectHTTPHeadersWithHost(req *http.Request) map[string]string {
+	result := collectHTTPHeaders(req.Header)
+	if req.Host != "" {
+		result["Host"] = req.Host
+	}
+	return result
+}
+
 func (s *server) Close() error {
 	return s.innnerListener.Close()
 }
@@ -99,7 +118,7 @@ func (s *server) upgrade(conn net.Conn) (stat.Connection, error) {
 		}
 	}
 
-	return stat.Connection(newConnection(conn, remoteAddr)), nil
+	return stat.Connection(newConnection(conn, remoteAddr, collectHTTPHeadersWithHost(req))), nil
 }
 
 func (s *server) keepAccepting() {

@@ -23,7 +23,9 @@ import (
 	"github.com/xtls/xray-core/features/routing"
 	"github.com/xtls/xray-core/proxy/vmess"
 	"github.com/xtls/xray-core/proxy/vmess/encoding"
+	"github.com/xtls/xray-core/transport/internet/reality"
 	"github.com/xtls/xray-core/transport/internet/stat"
+	"github.com/xtls/xray-core/transport/internet/tls"
 )
 
 type userByEmail struct {
@@ -233,6 +235,24 @@ func (h *Handler) Process(ctx context.Context, network net.Network, connection s
 	_, isDrain := iConn.(*net.TCPConn)
 	if !isDrain {
 		_, isDrain = iConn.(*net.UnixConn)
+	}
+
+	if content := session.ContentFromContext(ctx); content != nil {
+		if tlsConn, ok := iConn.(*tls.Conn); ok {
+			cs := tlsConn.ConnectionState()
+			content.SetAttribute("sni", cs.ServerName)
+			content.SetAttribute("alpn", cs.NegotiatedProtocol)
+		} else if realityConn, ok := iConn.(*reality.Conn); ok {
+			cs := realityConn.ConnectionState()
+			content.SetAttribute("sni", cs.ServerName)
+			content.SetAttribute("alpn", cs.NegotiatedProtocol)
+		}
+		if wsConn, ok := iConn.(interface{ Headers() map[string]string }); ok {
+			headers := wsConn.Headers()
+			for key, val := range headers {
+				content.SetAttribute("ws_header:"+key, val)
+			}
+		}
 	}
 
 	reader := &buf.BufferedReader{Reader: buf.NewReader(connection)}

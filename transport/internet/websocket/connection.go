@@ -20,9 +20,10 @@ type connection struct {
 	conn       *websocket.Conn
 	reader     io.Reader
 	remoteAddr net.Addr
+	headers    map[string]string
 }
 
-func NewConnection(conn *websocket.Conn, remoteAddr net.Addr, extraReader io.Reader, heartbeatPeriod uint32) *connection {
+func NewConnection(conn *websocket.Conn, remoteAddr net.Addr, extraReader io.Reader, heartbeatPeriod uint32, headers map[string]string) *connection {
 	if heartbeatPeriod != 0 {
 		go func() {
 			for {
@@ -38,6 +39,7 @@ func NewConnection(conn *websocket.Conn, remoteAddr net.Addr, extraReader io.Rea
 		conn:       conn,
 		remoteAddr: remoteAddr,
 		reader:     extraReader,
+		headers:    headers,
 	}
 }
 
