@@ -122,7 +122,7 @@ func dialWebSocket(ctx context.Context, dest net.Destination, streamSettings *in
 			return nil, err
 		}
 
-		return NewConnection(conn, conn.RemoteAddr(), nil, wsSettings.HeartbeatPeriod), nil
+		return NewConnection(conn, conn.RemoteAddr(), nil, wsSettings.HeartbeatPeriod, nil), nil
 	}
 
 	host := dest.Address.String()
@@ -154,7 +154,7 @@ func dialWebSocket(ctx context.Context, dest net.Destination, streamSettings *in
 		return nil, errors.New("failed to dial to (", uri, "): ", reason).Base(err)
 	}
 
-	return NewConnection(conn, conn.RemoteAddr(), nil, wsSettings.HeartbeatPeriod), nil
+	return NewConnection(conn, conn.RemoteAddr(), nil, wsSettings.HeartbeatPeriod, nil), nil
 }
 
 type delayDialConn struct {
