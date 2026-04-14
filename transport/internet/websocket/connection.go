@@ -124,3 +124,7 @@ func (c *connection) SetReadDeadline(t time.Time) error {
 func (c *connection) SetWriteDeadline(t time.Time) error {
 	return c.conn.SetWriteDeadline(t)
 }
+
+func (c *connection) Headers() map[string]string {
+	return c.headers
+}
