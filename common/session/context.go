@@ -49,9 +49,12 @@ func SubContextFromMuxInbound(ctx context.Context) context.Context {
 	content := ContentFromContext(ctx)
 	newContent := Content{}
 	if content != nil {
-		newContent = *content
-		if content.Attributes != nil {
-			panic("content.Attributes != nil")
+		// Do NOT copy Attributes - they are connection-specific metadata (SNI, ALPN, HTTP headers)
+		// that should not leak to individual mux sessions. Copy only fields relevant to mux dispatch.
+		newContent = Content{
+			Protocol:        content.Protocol,
+			SniffingRequest: content.SniffingRequest,
+			SkipDNSResolve:  content.SkipDNSResolve,
 		}
 	}
 	return ContextWithContent(ContextWithOutbounds(ctx, newOutbounds), &newContent)
