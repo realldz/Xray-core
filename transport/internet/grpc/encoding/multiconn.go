@@ -7,7 +7,6 @@ import (
 
 	"github.com/xtls/xray-core/common/buf"
 	"github.com/xtls/xray-core/common/errors"
-	xnet "github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/common/net/cnc"
 	"github.com/xtls/xray-core/common/signal/done"
 	"google.golang.org/grpc/metadata"
@@ -48,14 +47,10 @@ func NewMultiHunkConn(hc MultiHunkConn, cancel context.CancelFunc) net.Conn {
 
 	md, ok := metadata.FromIncomingContext(hc.Context())
 	if ok {
-		header := md.Get("x-real-ip")
-		if len(header) > 0 {
-			realip := xnet.ParseAddress(header[0])
-			if realip.Family().IsIP() {
-				rAddr = &net.TCPAddr{
-					IP:   realip.IP(),
-					Port: 0,
-				}
+		if realIP := forwardedClientAddress(md); realIP != nil {
+			rAddr = &net.TCPAddr{
+				IP:   realIP.IP(),
+				Port: 0,
 			}
 		}
 	}

@@ -52,14 +52,10 @@ func NewHunkConn(hc HunkConn, cancel context.CancelFunc) net.Conn {
 
 	md, ok := metadata.FromIncomingContext(hc.Context())
 	if ok {
-		header := md.Get("x-real-ip")
-		if len(header) > 0 {
-			realip := net.ParseAddress(header[0])
-			if realip.Family().IsIP() {
-				rAddr = &net.TCPAddr{
-					IP:   realip.IP(),
-					Port: 0,
-				}
+		if realIP := forwardedClientAddress(md); realIP != nil {
+			rAddr = &net.TCPAddr{
+				IP:   realIP.IP(),
+				Port: 0,
 			}
 		}
 	}
