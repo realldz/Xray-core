@@ -420,6 +420,8 @@ type MultiplexingConfig struct {
 	XudpConcurrency int32 `protobuf:"varint,3,opt,name=xudpConcurrency,proto3" json:"xudpConcurrency,omitempty"`
 	// "reject" (default), "allow" or "skip".
 	XudpProxyUDP443 string `protobuf:"bytes,4,opt,name=xudpProxyUDP443,proto3" json:"xudpProxyUDP443,omitempty"`
+	// Mux multiplex sub-protocol: "" (xray default), "smux", "yamux", "h2mux"
+	MuxProtocol string `protobuf:"bytes,5,opt,name=mux_protocol,proto3" json:"mux_protocol,omitempty"`
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
 }
@@ -478,6 +480,13 @@ func (x *MultiplexingConfig) GetXudpConcurrency() int32 {
 func (x *MultiplexingConfig) GetXudpProxyUDP443() string {
 	if x != nil {
 		return x.XudpProxyUDP443
+	}
+	return ""
+}
+
+func (x *MultiplexingConfig) GetMuxProtocol() string {
+	if x != nil {
+		return x.MuxProtocol
 	}
 	return ""
 }

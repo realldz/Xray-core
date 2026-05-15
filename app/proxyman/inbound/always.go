@@ -7,11 +7,13 @@ import (
 	"github.com/xtls/xray-core/common"
 	"github.com/xtls/xray-core/common/errors"
 	"github.com/xtls/xray-core/common/mux"
+	"github.com/xtls/xray-core/common/singmux"
 	"github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/common/serial"
 	"github.com/xtls/xray-core/common/session"
 	"github.com/xtls/xray-core/core"
 	"github.com/xtls/xray-core/features/policy"
+	"github.com/xtls/xray-core/features/routing"
 	"github.com/xtls/xray-core/features/stats"
 	"github.com/xtls/xray-core/proxy"
 	"github.com/xtls/xray-core/transport/internet"
@@ -48,7 +50,7 @@ type AlwaysOnInboundHandler struct {
 	receiverConfig *proxyman.ReceiverConfig
 	proxy          proxy.Inbound
 	workers        []worker
-	mux            *mux.Server
+	mux            routing.Dispatcher
 	tag            string
 }
 
@@ -79,7 +81,7 @@ func NewAlwaysOnInboundHandler(ctx context.Context, tag string, receiverConfig *
 		receiverConfig: receiverConfig,
 		proxyConfig:    proxyConfig,
 		proxy:          p,
-		mux:            mux.NewServer(ctx),
+		mux:            singmux.NewServer(ctx, mux.NewServer(ctx)),
 		tag:            tag,
 	}
 
@@ -184,7 +186,9 @@ func (h *AlwaysOnInboundHandler) Close() error {
 	for _, worker := range h.workers {
 		errs = append(errs, worker.Close())
 	}
-	errs = append(errs, h.mux.Close())
+	if c, ok := h.mux.(common.Closable); ok {
+		errs = append(errs, c.Close())
+	}
 	errs = append(errs, common.Close(h.proxy))
 	if err := errors.Combine(errs...); err != nil {
 		return errors.New("failed to close all resources").Base(err)

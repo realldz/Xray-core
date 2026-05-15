@@ -103,6 +103,7 @@ type MuxConfig struct {
 	Concurrency     int16  `json:"concurrency"`
 	XudpConcurrency int16  `json:"xudpConcurrency"`
 	XudpProxyUDP443 string `json:"xudpProxyUDP443"`
+	MuxProtocol     string `json:"muxProtocol"`
 }
 
 // Build creates MultiplexingConfig, Concurrency < 0 completely disables mux.
@@ -114,11 +115,15 @@ func (m *MuxConfig) Build() (*proxyman.MultiplexingConfig, error) {
 	default:
 		return nil, errors.New(`unknown "xudpProxyUDP443": `, m.XudpProxyUDP443)
 	}
+	if m.MuxProtocol != "" && m.MuxProtocol != "smux" && m.MuxProtocol != "yamux" && m.MuxProtocol != "h2mux" {
+		return nil, errors.New(`unknown "muxProtocol": `, m.MuxProtocol, ` (supported: "", "smux", "yamux", "h2mux")`)
+	}
 	return &proxyman.MultiplexingConfig{
 		Enabled:         m.Enabled,
 		Concurrency:     int32(m.Concurrency),
 		XudpConcurrency: int32(m.XudpConcurrency),
 		XudpProxyUDP443: m.XudpProxyUDP443,
+		MuxProtocol:     m.MuxProtocol,
 	}, nil
 }
 
