@@ -14,6 +14,7 @@ import (
 	"github.com/xtls/xray-core/common/buf"
 	"github.com/xtls/xray-core/common/errors"
 	"github.com/xtls/xray-core/common/mux"
+	"github.com/xtls/xray-core/common/singmux"
 	"github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/common/serial"
 	"github.com/xtls/xray-core/common/session"
@@ -62,6 +63,7 @@ type Handler struct {
 	proxy           proxy.Outbound
 	mux             *mux.ClientManager
 	xudp            *mux.ClientManager
+	singmux         *singmux.ClientManager
 	udp443          string
 	uplinkCounter   stats.Counter
 	downlinkCounter stats.Counter
@@ -119,25 +121,42 @@ func NewHandler(ctx context.Context, config *core.OutboundHandlerConfig) (outbou
 
 	if h.senderSettings != nil && h.senderSettings.MultiplexSettings != nil {
 		if config := h.senderSettings.MultiplexSettings; config.Enabled {
-			if config.Concurrency < 0 {
-				h.mux = &mux.ClientManager{Enabled: false}
-			}
-			if config.Concurrency == 0 {
-				config.Concurrency = 8 // same as before
-			}
-			if config.Concurrency > 0 {
-				h.mux = &mux.ClientManager{
+			// sing-box compatible multiplex (yamux protocol)
+			if config.MuxProtocol == "yamux" || config.MuxProtocol == "smux" || config.MuxProtocol == "h2mux" {
+				if config.Concurrency <= 0 {
+					config.Concurrency = 8
+				}
+				h.singmux = &singmux.ClientManager{
 					Enabled: true,
-					Picker: &mux.IncrementalWorkerPicker{
-						Factory: &mux.DialingWorkerFactory{
-							Proxy:  proxyHandler,
-							Dialer: h,
-							Strategy: mux.ClientStrategy{
-								MaxConcurrency: uint32(config.Concurrency),
-								MaxConnection:  128,
+					Factory: &singmux.ClientFactory{
+						Proxy:  proxyHandler,
+						Dialer: h,
+					},
+					Strategy: singmux.ClientStrategy{
+						MaxConcurrency: uint32(config.Concurrency),
+					},
+				}
+			} else {
+				if config.Concurrency < 0 {
+					h.mux = &mux.ClientManager{Enabled: false}
+				}
+				if config.Concurrency == 0 {
+					config.Concurrency = 8 // same as before
+				}
+				if config.Concurrency > 0 {
+					h.mux = &mux.ClientManager{
+						Enabled: true,
+						Picker: &mux.IncrementalWorkerPicker{
+							Factory: &mux.DialingWorkerFactory{
+								Proxy:  proxyHandler,
+								Dialer: h,
+								Strategy: mux.ClientStrategy{
+									MaxConcurrency: uint32(config.Concurrency),
+									MaxConnection:  128,
+								},
 							},
 						},
-					},
+					}
 				}
 			}
 			if config.XudpConcurrency < 0 {
@@ -203,6 +222,19 @@ func (h *Handler) Dispatch(ctx context.Context, link *transport.Link) {
 	if ob.Target.Network == net.Network_UDP && ob.OriginalTarget.Address != nil && ob.OriginalTarget.Address != ob.Target.Address {
 		link.Reader = &buf.EndpointOverrideReader{Reader: link.Reader, Dest: ob.Target.Address, OriginalDest: ob.OriginalTarget.Address}
 		link.Writer = &buf.EndpointOverrideWriter{Writer: link.Writer, Dest: ob.Target.Address, OriginalDest: ob.OriginalTarget.Address}
+	}
+	if h.singmux != nil && h.singmux.Enabled {
+		test := func(err error) {
+			if err != nil {
+				err := errors.New("failed to process singmux outbound traffic").Base(err)
+				session.SubmitOutboundErrorToOriginator(ctx, err)
+				errors.LogInfo(ctx, err.Error())
+				common.Interrupt(link.Writer)
+				common.Interrupt(link.Reader)
+			}
+		}
+		test(h.singmux.Dispatch(ctx, link))
+		return
 	}
 	if h.mux != nil {
 		test := func(err error) {
@@ -330,6 +362,9 @@ func (h *Handler) Start() error {
 // Close implements common.Closable.
 func (h *Handler) Close() error {
 	common.Close(h.mux)
+	if h.singmux != nil {
+		common.Close(h.singmux)
+	}
 	common.Close(h.proxy)
 	return nil
 }
