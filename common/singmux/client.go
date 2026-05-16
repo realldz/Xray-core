@@ -3,10 +3,12 @@ package singmux
 import (
 	"context"
 	"io"
+	"net"
 	"sync"
 	"time"
 
 	"github.com/hashicorp/yamux"
+	"github.com/xtaci/smux"
 	"github.com/xtls/xray-core/common"
 	"github.com/xtls/xray-core/common/errors"
 	"github.com/xtls/xray-core/common/session"
@@ -25,11 +27,38 @@ type ClientFactory struct {
 	Dialer internet.Dialer
 }
 
+type muxClientSession interface {
+	OpenStream() (net.Conn, error)
+	Close() error
+	IsClosed() bool
+}
+
+type yamuxClientSession struct {
+	*yamux.Session
+}
+
+func (s *yamuxClientSession) OpenStream() (net.Conn, error) {
+	return s.Session.Open()
+}
+
+type smuxClientSession struct {
+	*smux.Session
+}
+
+func (s *smuxClientSession) OpenStream() (net.Conn, error) {
+	stream, err := s.Session.OpenStream()
+	if err != nil {
+		return nil, err
+	}
+	return stream, nil
+}
+
 type ClientManager struct {
 	Enabled  bool
+	Protocol string
 	Factory  *ClientFactory
 	Strategy ClientStrategy
-	session  *yamux.Session
+	session  muxClientSession
 	conn     *transport.Link
 	mu       sync.Mutex
 }
@@ -45,7 +74,7 @@ func (m *ClientManager) Dispatch(ctx context.Context, link *transport.Link) erro
 
 	stream, err := sess.OpenStream()
 	if err != nil {
-		return errors.New("failed to open yamux stream").Base(err)
+		return errors.New("failed to open mux stream").Base(err)
 	}
 
 	ob := session.OutboundsFromContext(ctx)
@@ -67,22 +96,27 @@ func (m *ClientManager) Dispatch(ctx context.Context, link *transport.Link) erro
 	go func() {
 		defer wg.Done()
 		if err := CopyBufReaderToWriter(stream, link.Reader); err != nil {
-			common.Interrupt(link.Writer)
+			if !isNormalClose(err) {
+				errors.LogInfo(ctx, "singmux client uplink copy error: ", err)
+			}
 		}
 	}()
 
 	go func() {
 		defer wg.Done()
 		if err := CopyReaderToBufWriter(link.Writer, stream); err != nil {
-			common.Interrupt(link.Reader)
+			if !isNormalClose(err) {
+				errors.LogInfo(ctx, "singmux client downlink copy error: ", err)
+			}
 		}
 	}()
 
 	wg.Wait()
+	common.Close(link.Writer)
 	return nil
 }
 
-func (m *ClientManager) getOrCreateSession() (*yamux.Session, error) {
+func (m *ClientManager) getOrCreateSession() (muxClientSession, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -118,30 +152,58 @@ func (m *ClientManager) getOrCreateSession() (*yamux.Session, error) {
 		cancel()
 	}()
 
-	if err := WriteHandshake(conn, &HandshakeRequest{Version: Version0, Protocol: ProtocolYAMux}); err != nil {
+	var protocol byte
+	switch m.Protocol {
+	case "smux":
+		protocol = ProtocolSmux
+	case "yamux":
+		protocol = ProtocolYAMux
+	default:
+		common.Interrupt(m.conn.Reader)
+		common.Interrupt(m.conn.Writer)
+		return nil, errors.New("unknown singmux protocol: ", m.Protocol)
+	}
+
+	if err := WriteHandshake(conn, &HandshakeRequest{Version: Version0, Protocol: protocol}); err != nil {
 		common.Interrupt(m.conn.Reader)
 		common.Interrupt(m.conn.Writer)
 		return nil, errors.New("failed to write singmux handshake").Base(err)
 	}
 
-	config := yamux.DefaultConfig()
-	config.EnableKeepAlive = true
-	config.KeepAliveInterval = 30 * time.Second
-	config.LogOutput = io.Discard
-	sess, err := yamux.Client(conn, config)
-	if err != nil {
-		common.Interrupt(m.conn.Reader)
-		common.Interrupt(m.conn.Writer)
-		return nil, errors.New("failed to create yamux client").Base(err)
+	switch protocol {
+	case ProtocolSmux:
+		cfg := smux.DefaultConfig()
+		cfg.KeepAliveDisabled = true
+		ss, err := smux.Client(conn, cfg)
+		if err != nil {
+			common.Interrupt(m.conn.Reader)
+			common.Interrupt(m.conn.Writer)
+			return nil, errors.New("failed to create smux client").Base(err)
+		}
+		m.session = &smuxClientSession{ss}
+
+	case ProtocolYAMux:
+		cfg := yamux.DefaultConfig()
+		cfg.EnableKeepAlive = true
+		cfg.KeepAliveInterval = 30 * time.Second
+		cfg.LogOutput = io.Discard
+		ys, err := yamux.Client(conn, cfg)
+		if err != nil {
+			common.Interrupt(m.conn.Reader)
+			common.Interrupt(m.conn.Writer)
+			return nil, errors.New("failed to create yamux client").Base(err)
+		}
+		m.session = &yamuxClientSession{ys}
 	}
 
-	m.session = sess
 	go func() {
 		<-proxyCtx.Done()
-		m.session.Close()
+		if m.session != nil {
+			m.session.Close()
+		}
 	}()
 
-	return sess, nil
+	return m.session, nil
 }
 
 func (m *ClientManager) Close() error {
