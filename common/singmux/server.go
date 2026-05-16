@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/hashicorp/yamux"
+	"github.com/xtaci/smux"
 	"github.com/xtls/xray-core/common"
 	"github.com/xtls/xray-core/common/errors"
 	"github.com/xtls/xray-core/common/net"
@@ -17,11 +18,25 @@ import (
 	"github.com/xtls/xray-core/transport/pipe"
 )
 
-// Server implements routing.Dispatcher, wrapping a yamux.Server.
+// Server implements routing.Dispatcher, wrapping mux sessions.
 // It intercepts connections destined for sp.mux.sing-box.arpa:444
 // and demuxes them into individual streams dispatched to the wrapped dispatcher.
 type Server struct {
 	dispatcher routing.Dispatcher
+}
+
+type muxServerSession interface {
+	Accept() (net.Conn, error)
+	Close() error
+}
+
+type smuxServerSession struct {
+	*smux.Session
+}
+
+func (s *smuxServerSession) Accept() (net.Conn, error) {
+	stream, err := s.Session.AcceptStream()
+	return stream, err
 }
 
 func NewServer(ctx context.Context, fallback routing.Dispatcher) *Server {
@@ -91,27 +106,47 @@ func (s *Server) runMuxSession(ctx context.Context, conn io.ReadWriteCloser) err
 	if err != nil {
 		return errors.New("failed to read singmux handshake").Base(err)
 	}
-	if req.Protocol != ProtocolYAMux {
-		return errors.New("unsupported singmux protocol: ", req.Protocol)
-	}
 
-	config := yamux.DefaultConfig()
-	config.EnableKeepAlive = true
-	config.KeepAliveInterval = 30 * time.Second
-	config.LogOutput = io.Discard
-	sess, err := yamux.Server(conn, config)
-	if err != nil {
-		return errors.New("failed to create yamux server").Base(err)
+	var sess muxServerSession
+	switch req.Protocol {
+	case ProtocolSmux:
+		cfg := smux.DefaultConfig()
+		cfg.KeepAliveDisabled = true
+		ss, err := smux.Server(conn, cfg)
+		if err != nil {
+			return errors.New("failed to create smux server").Base(err)
+		}
+		sess = &smuxServerSession{ss}
+
+	case ProtocolYAMux:
+		cfg := yamux.DefaultConfig()
+		cfg.EnableKeepAlive = true
+		cfg.KeepAliveInterval = 30 * time.Second
+		cfg.StreamCloseTimeout = 5 * time.Second
+		cfg.StreamOpenTimeout = 5 * time.Second
+		cfg.LogOutput = io.Discard
+		ys, err := yamux.Server(conn, cfg)
+		if err != nil {
+			return errors.New("failed to create yamux server").Base(err)
+		}
+		sess = ys
+
+	default:
+		return errors.New("unsupported singmux protocol: ", req.Protocol)
 	}
 	defer sess.Close()
 
 	for {
 		stream, err := sess.Accept()
 		if err != nil {
-			return errors.New("yamux accept error").Base(err)
+			return errors.New("mux accept error").Base(err)
 		}
 		go s.handleStream(ctx, stream)
 	}
+}
+
+func isNormalClose(err error) bool {
+	return err == io.EOF || err == io.ErrClosedPipe
 }
 
 func (s *Server) handleStream(ctx context.Context, stream net.Conn) {
@@ -131,20 +166,16 @@ func (s *Server) handleStream(ctx context.Context, stream net.Conn) {
 		return
 	}
 
-	// Build stream-local context — do NOT reuse SubContextFromMuxInbound
-	// as it copies SniffingRequest which can bleed across streams.
-	subCtx := context.Background()
+	// Build stream-local context independent of parent cancellation
+	// to prevent cascading cancel from killing active dispatch streams.
+	subCtx := session.ContextWithOutbounds(context.Background(), []*session.Outbound{{}})
 
-	// Fresh outbounds so routing chain is clean per stream
-	subCtx = session.ContextWithOutbounds(subCtx, []*session.Outbound{{}})
-
-	// Value-copy inbound to avoid sharing mutable pointer across goroutines
-	if in := session.InboundFromContext(ctx); in != nil {
-		inCopy := *in
+	streamInbound := session.InboundFromContext(ctx)
+	if streamInbound != nil {
+		inCopy := *streamInbound
 		subCtx = session.ContextWithInbound(subCtx, &inCopy)
 	}
 
-	// Copy Content only for safe fields
 	if content := session.ContentFromContext(ctx); content != nil {
 		newContent := session.Content{
 			SkipDNSResolve: content.SkipDNSResolve,
@@ -162,23 +193,45 @@ func (s *Server) handleStream(ctx context.Context, stream net.Conn) {
 
 	errors.LogInfo(ctx, "[singmux stream ", id, "] forwarding data")
 
-	var wg sync.WaitGroup
-	wg.Add(2)
+	var (
+		downWg        sync.WaitGroup
+		uplinkBytes   int64
+		downlinkBytes int64
+		uplinkErr     error
+		downlinkErr   error
+	)
+	downWg.Add(1)
 
+	// Downlink: remote server → link.Reader → yamux stream → client
 	go func() {
-		defer wg.Done()
-		if err := CopyReaderToBufWriter(link.Writer, stream); err != nil {
-			common.Interrupt(link.Writer)
+		defer downWg.Done()
+		cw := &countingWriter{w: stream}
+		err := CopyBufReaderToWriter(cw, link.Reader)
+		downlinkBytes = cw.n
+		if err != nil && !isNormalClose(err) {
+			downlinkErr = err
+			errors.LogInfo(ctx, "[singmux stream ", id, "] downlink copy error: ", err)
+		}
+		// Half-close yamux stream write side: signal sing-box that response is complete.
+		// This sends FIN to the client, letting sing-box propagate the complete
+		// HTTP response to the browser. Without this, the browser waits for data
+		// that will never arrive.
+		common.Close(link.Writer)
+		stream.Close()
+	}()
+
+	// Uplink: client → yamux stream → link.Writer → remote server
+	go func() {
+		cr := &countingReader{r: stream}
+		err := CopyReaderToBufWriter(link.Writer, cr)
+		uplinkBytes = cr.n
+		if err != nil && !isNormalClose(err) {
+			uplinkErr = err
+			errors.LogInfo(ctx, "[singmux stream ", id, "] uplink copy error: ", err)
 		}
 	}()
 
-	go func() {
-		defer wg.Done()
-		if err := CopyBufReaderToWriter(stream, link.Reader); err != nil {
-			common.Interrupt(link.Reader)
-		}
-	}()
-
-	wg.Wait()
+	downWg.Wait()
+	errors.LogInfo(ctx, "[singmux stream ", id, "] downlink done: bytes=", downlinkBytes, " err=", downlinkErr, " uplink: bytes=", uplinkBytes, " err=", uplinkErr)
 	errors.LogInfo(ctx, "[singmux stream ", id, "] closed")
 }

@@ -129,7 +129,8 @@ func NewHandler(ctx context.Context, config *core.OutboundHandlerConfig) (outbou
 					config.Concurrency = 8
 				}
 				h.singmux = &singmux.ClientManager{
-					Enabled: true,
+					Enabled:  true,
+					Protocol: config.MuxProtocol,
 					Factory: &singmux.ClientFactory{
 						Proxy:  proxyHandler,
 						Dialer: h,
